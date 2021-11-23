@@ -116,6 +116,6 @@ object project3scala
        )
      notavailable_cust_json.coalesce(1).write.format("json").mode("overwrite").
      save("hdfs:/user/cloudera/spark_project_dir/notavailable_cust")  
-     println("=========Written available cust data to HDFS as JSON========")
+     println("=========Written available cust data to HDFS as JSON=== Changing========")
    }
 }

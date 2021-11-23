@@ -1,0 +1,121 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from datatime import *
+import urllib.request
+
+spark = (
+    SparkSession.builder.appName("spark project using Pyspark")
+    .master("local[*]")
+    .enableHiveSupport()
+    .getorCreate()
+)
+sc = spark.sparkContext
+sc.setlogLevel("Error")
+
+# Yesterday's date
+yest_date = str(date.today() - timedelta(days=1))
+# print(yest_date)
+
+# reading avro dataset from hdfs path
+avrodf = spark.read.format("com.databricks.spark.avro").load(
+    "hdfs:/user/cloudera/{}".format(yest_date)
+)
+print("==========Raw Avro DF===============")
+avrodf.show()
+avrodf.printSchema()
+req = urllib.request.Request(url="https://randomuser.me/api/0.8/?results=1000")
+f = urllib.request.urlopen(req)
+urldata = f.read().decode("utf-8")
+url_rdd = sc.parallelize([urldata])
+randomAPI_df = spark.read.json(url_rdd)
+
+print("==========Random API DF_ RAW COMPLEX JSON================")
+randomAPI_df.show()
+randomAPI_df.printSchema()
+
+flattendata = randomAPI_df.withColumn("results", explode(col("results"))).select(
+    col("nationality"),
+    col("results.user.cell"),
+    col("results.user.dob"),
+    col("results.user.email"),
+    col("results.user.gender"),
+    col("results.user.location.city"),
+    col("results.user.location.state"),
+    col("results.user.location.street"),
+    col("results.user.location.zip"),
+    col("results.user.md5"),
+    col("results.user.name.first"),
+    col("results.user.name.last"),
+    col("results.user.name.title"),
+    col("results.user.password"),
+    col("results.user.phone"),
+    col("results.user.picture.large"),
+    col("results.user.picture.medium"),
+    col("results.user.picture.thumbnail"),
+    col("results.user.registered"),
+    col("results.user.salt"),
+    col("results.user.sha1"),
+    col("results.user.sha256"),
+    col("results.user.username"),
+    col("seed"),
+    col("version"),
+)
+flattendata.show(false)
+flattendata.printSchema()
+# removing numeric value in username column
+flattendata1 = flattendata.withColumn(
+    "username", regexp_replace(col("username"), "([0-9])", "")
+)
+print("===========Removed numeric in username column==================")
+flattendata1.show()
+
+# Applying broadcast left outer join
+print(
+    "===========JOINED Two DFs using left outer join with Broadcast=================="
+)
+joiningdata = avrodf.join(broadcast(flattendata1), Seq("username"), "left")
+joiningdata.show()
+joiningdata.printSchema()
+# Available and Non Available customer based on Nationality column
+print(
+    "===========Available Customer with nationality not null customer=================="
+)
+available_cust = joiningdata.filter(col("Nationality").isNotNull)
+available_cust.show()
+print(
+    "===========Not Available Customer with nationality null customer=================="
+)
+notavailable_cust = joiningdata.filter(col("Nationality").isNull)
+notavailable_cust.show()
+# Available customer
+print("=============Available customer adding new column as date==================")
+available_custdf = available_cust.withColumn("Today", current_date())
+available_custdf.show()
+print("=============Not Available customer data modification=======")
+notavailable_cust_fillingup = notavailable_cust.na.fill("NA").na.fill(0)
+notavailable_cust_fillingup.show()
+notavailable_custdf = notavailable_cust_fillingup.withColumn("Today", current_date())
+notavailable_custdf.show()
+print("=============Available customer data modification=======")
+available_cust_json = available_custdf.groupBy("username").agg(
+    collect_list("ip").alias("ip"),
+    collect_list("id").alias("id"),
+    sum("amount").alias("Total amount"),
+    struct(count("ip").alias("ip_count"), count("id").alias("id_count")).alias("count"),
+)
+available_cust_json.coalesce(1).write.format("json").mode("overwrite").save(
+    "hdfs:/user/cloudera/spark_Pysparkproject_dir/available_cust"
+)
+print("=========Written available cust data to HDFS as JSON========")
+print("=============Not Available customer data modification=======")
+notavailable_cust_json = notavailable_custdf.groupBy("username").agg(
+    collect_list("ip").alias("ip"),
+    collect_list("id").alias("id"),
+    sum("amount").alias("Total amount"),
+    struct(count("ip").alias("ip_count"), count("id").alias("id_count")).alias("count"),
+)
+notavailable_cust_json.coalesce(1).write.format("json").mode("overwrite").save(
+    "hdfs:/user/cloudera/spark_Pysparkproject_dir/notavailable_cust"
+)
+print("=========Written not available cust data to HDFS as JSON========")

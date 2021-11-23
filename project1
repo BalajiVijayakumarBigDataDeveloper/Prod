@@ -1,0 +1,121 @@
+package sparkPack
+
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql._
+import scala.io.Source
+
+object project3scala 
+  {
+   def main(arg:Array[String]): Unit = 
+   {  
+     val conf = new SparkConf().setAppName("Project3").setMaster("local[*]")
+     val sc = new SparkContext(conf)
+     sc.setLogLevel("ERROR")
+     val hc = new HiveContext(sc)
+     import hc.implicits._
+     val spark = SparkSession.builder().getOrCreate()
+     import spark.implicits._
+     //avro dataset read
+     val yest_date = java.time.LocalDate.now.minusDays(1).toString()
+    println("==============AVRO DATA==================")
+    val avrodf = spark.read.format("com.databricks.spark.avro").option("header","true").
+    load(s"hdfs://user/cloudera/$yest_date")
+    //val avrodf = spark.read.format("com.databricks.spark.avro").option("header","true").
+    //load("file:///c:/data/projectsample.avro")
+    avrodf.show()
+     
+    println("===========WEBAPI==================")
+    val data = Source.fromURL("https://randomuser.me/api/0.8/?result=10").mkString
+    val rdd = sc.parallelize(List(data))
+    val webapi_df = spark.read.json(rdd)
+    webapi_df.show()
+    webapi_df.printSchema()
+    
+    println("===========Array flatten==================")
+    val flattendata = webapi_df.withColumn("results", explode(col("results"))).select(
+        col("nationality"),
+        col("results.user.cell"),
+        col("results.user.dob"),
+        col("results.user.email"),
+        col("results.user.gender"),
+        col("results.user.location.city"),
+        col("results.user.location.state"),
+        col("results.user.location.street"),
+        col("results.user.location.zip"),
+        col("results.user.md5"),
+        col("results.user.name.first"),
+        col("results.user.name.last"),
+        col("results.user.name.title"),
+        col("results.user.password"),
+        col("results.user.phone"),
+        col("results.user.picture.large"),
+        col("results.user.picture.medium"),
+        col("results.user.picture.thumbnail"),
+        col("results.user.registered"),
+        col("results.user.salt"),
+        col("results.user.sha1"),
+        col("results.user.sha256"),
+        col("results.user.username"),
+        col("seed"),
+        col("version")
+      )
+    flattendata.show(false)
+    flattendata.printSchema()
+     //removing numeric value in username column
+     val flattendata1 =  flattendata.withColumn("username",regexp_replace(col("username"), "([0-9])",""))
+     println("===========Removed numeric in username column==================")
+     flattendata1.show()
+     
+     //Applying broadcast left outer join
+     println("===========JOINED Two DFs using left outer join with Broadcast==================")
+     val joiningdata = avrodf.join(broadcast(flattendata1),Seq("username"),"left")
+     joiningdata.show()
+     joiningdata.printSchema()
+     //Available and Non Available customer based on Nationality column
+     println("===========Available Customer with nationality not null customer==================")
+     val available_cust = joiningdata.filter(col("Nationality").isNotNull)
+     available_cust.show()
+     println("===========Not Available Customer with nationality null customer==================")
+     val notavailable_cust = joiningdata.filter(col("Nationality").isNull)
+     notavailable_cust.show()
+     //Available customer 
+     println("=============Available customer adding new column as date==================")
+     val available_custdf = available_cust.withColumn("Today",current_date())
+     available_custdf.show()
+     println("=============Not Available customer data modification=======")
+     val notavailable_cust_fillingup = notavailable_cust.na.fill("NA").na.fill(0)
+     notavailable_cust_fillingup.show()
+     val notavailable_custdf = notavailable_cust_fillingup.withColumn("Today",current_date())
+     notavailable_custdf.show()
+     println("=============Available customer data modification=======")
+     val available_cust_json = available_custdf.groupBy("username").agg(
+       collect_list("ip").alias("ip"),
+       collect_list("id").alias("id"),
+       sum("amount").alias("Total amount"),
+       struct(
+         count("ip").alias("ip_count"),
+         count("id").alias("id_count")
+         ).alias("count")
+       )
+     available_cust_json.coalesce(1).write.format("json").mode("overwrite").
+     save("hdfs:/user/cloudera/spark_project_dir/available_cust")
+     println("=========Written available cust data to HDFS as JSON========")
+     println("=============Not Available customer data modification=======")
+     val notavailable_cust_json = notavailable_custdf.groupBy("username").agg(
+       collect_list("ip").alias("ip"),
+       collect_list("id").alias("id"),
+       sum("amount").alias("Total amount"),
+       struct(
+         count("ip").alias("ip_count"),
+         count("id").alias("id_count")
+         ).alias("count")
+       )
+     notavailable_cust_json.coalesce(1).write.format("json").mode("overwrite").
+     save("hdfs:/user/cloudera/spark_project_dir/notavailable_cust")  
+     println("=========Written available cust data to HDFS as JSON========")
+   }
+}
